@@ -1,0 +1,138 @@
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Logging;
+using System;
+using System.IO;
+using System.Threading.Tasks;
+using Microsoft.AspNetCore.Routing;
+using Newtonsoft.Json.Linq;
+using Newtonsoft.Json;
+
+namespace Thm.App.Middlewares
+{
+    /// <summary>
+    /// Sử dụng để log tất cả request response khi hệ thống response ErrorApiModel
+    /// </summary>
+    public class ErrorApiLoggingHandlerMiddleware
+    {
+        private readonly RequestDelegate _next;
+        private readonly ILogger _logger;
+
+        public ErrorApiLoggingHandlerMiddleware(
+            RequestDelegate next, 
+            ILogger<ErrorApiLoggingHandlerMiddleware> logger)
+        {
+            _next = next;
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        }
+
+        public async Task Invoke(HttpContext context)
+        {
+            HttpRequest request = context.Request;
+            HttpResponse response = context.Response;
+
+            if (request.Method != "GET")
+            {
+                request.EnableBuffering();
+            }
+
+            //Create a new memory stream...
+            using (var memoryResponseBody = new MemoryStream())
+            {
+                // backup the original response body stream
+                var originalBodyStream = context.Response.Body;
+                // ...and use that for the temporary response body
+                context.Response.Body = memoryResponseBody;
+
+                try
+                {
+                    // Continue down the Middleware pipeline
+                    await _next(context);
+                    
+                    if (response.StatusCode != StatusCodes.Status200OK)
+                    {
+                        try
+                        {
+                            // get request body
+                            string requestBody = await ReadRequestBodyAsync(request);
+                            // get response body
+                            var responseBody = await ReadResponseBodyAsync(response);
+                            // try load body object to model
+                            JObject o = JObject.Parse(responseBody);
+                            var errorModel = o.ToObject<ErpReport.App.Models.ErrorApiModel>();
+                            if (errorModel != null)
+                            {
+                                // log
+                                LogError(context, requestBody, responseBody);
+                            }
+                        }
+                        catch (JsonException ex)
+                        {
+                            var message = ex.Message;
+                            // do nothing if it is not json or cannot convert to error object
+                        }
+                    }
+                }
+                finally
+                {
+                    //Copy the contents of the temporary memory stream (which contains the response) back to the original stream, which is then returned to the client.
+                    memoryResponseBody.Seek(0, SeekOrigin.Begin);
+                    await memoryResponseBody.CopyToAsync(originalBodyStream);
+
+                    context.Response.Body = originalBodyStream;
+                }
+            }
+        }
+
+        private void LogError(HttpContext context, string requestBody, string responseBody)
+        {
+            var request = context.Request;
+            var response = context.Response;
+            var routeData = context.GetRouteData();
+            var area = routeData.Values["area"]?.ToString() ?? routeData.DataTokens["area"]?.ToString();
+            var controller = routeData.Values["controller"]?.ToString();
+            var action = routeData.Values["action"]?.ToString();
+
+            _logger.LogError(
+                $"Had error in request." +
+                $"\n - Url: {request.Method} " + $"{request.Scheme}://{request.Host}{request.Path}{request.QueryString}" +
+                $"\n - RequestController: {area}/{controller}/{action}" +
+                $"\n - RequestBody:  {requestBody}" +
+                $"\n - ResponseStatusCode: {response.StatusCode}" +
+                $"\n - ResponseBody: {responseBody}");
+        }
+
+        private static async Task<string> ReadRequestBodyAsync(HttpRequest request)
+        {
+            var requestBody = string.Empty;
+            if (request.Method != "GET")
+            {
+                // need to use the code request.EnableBuffering(); before calling await _next(context);
+
+                request.Body.Seek(0, SeekOrigin.Begin); // reset
+                var body = await new StreamReader(request.Body).ReadToEndAsync();
+                request.Body.Seek(0, SeekOrigin.Begin); // reset
+
+                requestBody = body;
+            }
+
+            return requestBody;
+        }
+
+        private static async Task<string> ReadResponseBodyAsync(HttpResponse response)
+        {
+            var responseBody = string.Empty;
+            if (response.ContentLength > 0)
+            {
+                if (!response.Body.CanSeek) throw new NotSupportedException("Cannot seek the response body stream. You must wrap response body stream in a MemoryStream before run await _next(context)");
+
+                response.Body.Seek(0, SeekOrigin.Begin); // reset
+                var body = await new StreamReader(response.Body).ReadToEndAsync();
+                response.Body.Seek(0, SeekOrigin.Begin); // reset
+
+                responseBody = body;
+            }
+
+            return responseBody;
+        }
+    }
+}
