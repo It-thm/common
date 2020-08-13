@@ -7,7 +7,7 @@ using Microsoft.AspNetCore.Routing;
 using Newtonsoft.Json.Linq;
 using Newtonsoft.Json;
 
-namespace Thm.App.Middlewares
+namespace ErpReport.App.Middlewares
 {
     /// <summary>
     /// Sử dụng để log tất cả request response khi hệ thống response ErrorApiModel
@@ -50,25 +50,16 @@ namespace Thm.App.Middlewares
                     
                     if (response.StatusCode != StatusCodes.Status200OK)
                     {
-                        try
+                        // get response body
+                        var responseBody = await ReadResponseBodyAsync(response);
+
+                        // check if server response ErrorApiModel
+                        if (IsApiModelType<ErpReport.App.Models.ErrorApiModel>(responseBody))
                         {
                             // get request body
                             string requestBody = await ReadRequestBodyAsync(request);
-                            // get response body
-                            var responseBody = await ReadResponseBodyAsync(response);
-                            // try load body object to model
-                            JObject o = JObject.Parse(responseBody);
-                            var errorModel = o.ToObject<ErpReport.App.Models.ErrorApiModel>();
-                            if (errorModel != null)
-                            {
-                                // log
-                                LogError(context, requestBody, responseBody);
-                            }
-                        }
-                        catch (JsonException ex)
-                        {
-                            var message = ex.Message;
-                            // do nothing if it is not json or cannot convert to error object
+                            // log
+                            LogError(context, requestBody, responseBody);
                         }
                     }
                 }
@@ -81,6 +72,24 @@ namespace Thm.App.Middlewares
                     context.Response.Body = originalBodyStream;
                 }
             }
+        }
+
+        private bool IsApiModelType<TApiModel>(string json)
+        {
+            try
+            {
+                // try load body object to model
+                JObject o = JObject.Parse(json);
+                var errorModel = o.ToObject<TApiModel>();
+
+                return errorModel != null;
+            }
+            catch (JsonException ex)
+            {
+                var message = ex.Message;
+                // do nothing if it is not json or cannot convert to error object
+            }
+            return false;
         }
 
         private void LogError(HttpContext context, string requestBody, string responseBody)
