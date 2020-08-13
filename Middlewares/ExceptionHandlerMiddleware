@@ -1,0 +1,95 @@
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
+using System;
+using System.IO;
+using System.Threading.Tasks;
+using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.Options;
+
+namespace Thm.App.Middlewares
+{
+    public class ExceptionHandlerMiddleware
+    {
+        private readonly RequestDelegate _next;
+        private readonly ILogger _logger;
+        private readonly MvcNewtonsoftJsonOptions _jsonOptions;
+
+        public ExceptionHandlerMiddleware(
+            RequestDelegate next, 
+            ILogger<ExceptionHandlerMiddleware> logger,
+            IOptions<MvcNewtonsoftJsonOptions> jsonOptions)
+        {
+            _next = next;
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            _jsonOptions = jsonOptions?.Value ?? new MvcNewtonsoftJsonOptions();
+        }
+
+        public async Task Invoke(HttpContext context)
+        {
+            HttpRequest request = context.Request;
+            try
+            {   
+                if (request.Method != "GET")
+                {
+                    request.EnableBuffering();
+                }
+
+                await _next(context);
+            }
+            catch (Exception ex)
+            {
+                await LogExceptionAsync(context, request, ex);
+
+                await HandleResponseExceptionAsync(context, ex);
+            }
+        }
+
+        private async Task LogExceptionAsync(HttpContext context, HttpRequest request, Exception ex)
+        {
+            var routeData = context.GetRouteData();
+
+            var area = routeData.Values["area"]?.ToString() ?? routeData.DataTokens["area"]?.ToString();
+            var controller = routeData.Values["controller"]?.ToString();
+            var action = routeData.Values["action"]?.ToString();
+            var requestBody = await ReadRequestBodyAsync(request);
+
+            _logger.LogError(ex,
+                $"Had exception in request." +
+                $"\n - Url: {request.Method} " + $"{request.Scheme}://{request.Host}{request.Path}{request.QueryString}" +
+                $"\n - RequestController: {area}/{controller}/{action}" +
+                $"\n - RequestBody: {requestBody}");
+        }
+
+        private async Task HandleResponseExceptionAsync(HttpContext context, Exception exception)
+        {
+            context.Response.ContentType = "application/json";
+            context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+
+            var response = new ErpReport.App.Models.InternalServerErrorErrorApiModel("Lỗi hệ thống!!!")
+            {
+                //Exception = _environment.IsDevelopment() ? exception : null
+            };
+            var json = Newtonsoft.Json.JsonConvert.SerializeObject(response, _jsonOptions.SerializerSettings);
+
+            await context.Response.WriteAsync(json);
+        }
+
+        private static async Task<string> ReadRequestBodyAsync(HttpRequest request)
+        {
+            var requestBody = string.Empty;
+            if (request.Method != "GET")
+            {
+                // need to use the code request.EnableBuffering(); before calling await _next(context);
+
+                request.Body.Seek(0, SeekOrigin.Begin); // reset
+                var body = await new StreamReader(request.Body).ReadToEndAsync();
+                request.Body.Seek(0, SeekOrigin.Begin); // reset
+
+                requestBody = body;
+            }
+
+            return requestBody;
+        }
+    }
+}
