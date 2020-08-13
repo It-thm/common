@@ -1,0 +1,45 @@
+using Microsoft.AspNetCore.Http;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+using System;
+using System.Threading.Tasks;
+
+namespace Thm.Middlewares
+{
+    public class EnsureMigrationDbContextMiddleware<TDbContext>
+       where TDbContext : DbContext
+    {
+        private readonly RequestDelegate _next;
+        private readonly ILogger _logger;
+
+        private static object locker = new object();
+        private static bool _isEnsured = false;
+
+        public EnsureMigrationDbContextMiddleware(
+            RequestDelegate next,
+            ILogger<EnsureMigrationDbContextMiddleware<TDbContext>> logger)
+        {
+            _next = next;
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        }
+
+        public async Task Invoke(HttpContext context, TDbContext dbContext)
+        {
+            // Ensure migration dbContext
+            if (!_isEnsured)
+            {
+                lock (locker)
+                {
+                    if (!_isEnsured)
+                    {
+                        _logger.LogInformation($"Run ensuring the migration of the DbContext {dbContext.GetType().Name}");
+                        dbContext.Database.Migrate();
+                        _isEnsured = true;
+                    }
+                }
+            }
+
+            await _next.Invoke(context);
+        }
+    }
+}
